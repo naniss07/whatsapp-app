@@ -55,7 +55,7 @@ if run:
                     w.write(f.getbuffer())
                 paths.append(p)
 
-            rows = process_files(paths, from_arg, to_arg)
+            rows = process_files(paths, from_arg, to_arg, exclude_resolved=True)
 
             out_xlsx = os.path.join(temp_dir, "out.xlsx")
             write_excel(rows, out_xlsx)

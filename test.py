@@ -7,6 +7,67 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+def _looks_like_resolved_message(text: str) -> bool:
+    """
+    Operasyon notlarında "başarıldı / sorun giderildi" gibi olumlu kapanışları filtrelemek için
+    basit bir sezgisel kontrol.
+
+    Kural: Mesajın son kısmında (kapanış bölgesinde) olumlu kapanış ifadeleri varsa True döner.
+    İstisna: "kontrol sağlandı" gibi tek başına olumlu kapanış sayılmayan ifadeler True üretmesin.
+    """
+    if not text:
+        return False
+
+    t = (text or "").lower()
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return False
+
+    # Kapanışa bak: genelde son cümlede geçiyor
+    tail = t[-140:]
+
+    # Olumsuz (başarısız / eksik tamamlandı) sinyaller varsa resolved sayma
+    if re.search(
+        r"\b("
+        r"yap[ıi]lamad[ıi]|olmad[ıi]|"
+        r"başar[ıi]lamad[ıi]|basar[ıi]lamad[ıi]|"
+        r"giderilemed[ıi]|cozulemed[ıi]|çözülemed[ıi]|"
+        r"al[ıi]namad[ıi]|al[ıi]nmad[ıi]|"
+        r"değiştirilemed[ıi]|degistirilemed[ıi]|"
+        r"girilemed[ıi]|giremed[ıi]|"
+        r"hata verd[ıi]"
+        r")\b",
+        tail,
+    ):
+        return False
+
+    # İstisnalar: bunlar tek başına "olumlu bitti" sayılmasın
+    # (istenirse buraya yeni ifadeler eklenebilir)
+    if re.search(r"\bkontrol sağland[ıi]\b", tail) or re.search(r"\bkontrol sagland[ıi]\b", tail):
+        return False
+
+    resolved_phrases = [
+        r"\bbaşar[ıi]ld[ıi]\b",
+        r"\bbaşar[ıi]l[ıi]\b",
+        r"\bbasar[ıi]ld[ıi]\b",
+        r"\bbasar[ıi]l[ıi]\b",
+        r"\bsorun giderild[ıi]\b",
+        r"\bsorun çözüld[üu]\b",
+        r"\bsorun cozuldu\b",
+        r"\bar[ıi]za giderild[ıi]\b",
+        r"\bçözüld[üu]\b",
+        r"\bcozuldu\b",
+        r"\btamamland[ıi]\b",
+        r"\bişlem tamamland[ıi]\b",
+        r"\bislem tamamland[ıi]\b",
+        r"\bbağlant[ıi] ger[çc]ekle[şs]ti\b",
+        r"\bbaglanti gercekles(ti|ti)\b",
+        r"\baktif edildi\b",
+        r"\baç[ıi]ld[ıi]\b",
+    ]
+
+    return any(re.search(p, tail) for p in resolved_phrases)
+
 def _normalize_spaces(s: str) -> str:
     s = re.sub(r'[ \t]+', ' ', s)
     s = re.sub(r'\s*\n\s*', ' ', s)
@@ -184,6 +245,13 @@ def build_rule_summary(clean_text: str, mentions: list[str] | None = None) -> st
 
     if any_("ulaşılam", "cevap vermiyor", "telefonlara cevap"):
         parts.append("Müşteriye ulaşılamıyor")
+
+    # Diğer ISS bilgisi: "diğer ıss/iss" geçen kayıtlarda provider'ı da özetle
+    # (örn: "diğer ıss vodafone ..." → "Diğer ISS: Vodafone")
+    if ("diğer" in t or "diger" in t) and ("ıss" in t or "iss" in t):
+        prov = extract_provider(clean_text)
+        if prov:
+            parts.append(f"Diğer ISS: {prov}")
 
     # Adres güncelleme (metinden aynen çek)
     if any_("adres yanlış", "adresi yanlış", "adres yanlis", "adresi yanlis", "adres tutmuyor", "adres hatalı", "adres hatali", "doğru adres", "dogru adres"):
@@ -578,7 +646,12 @@ def parse_whatsapp_txt(filepath):
     flush()
     return messages
 
-def process_files(filepaths: list[str], from_str: str | None = None, to_str: str | None = None) -> list[dict]:
+def process_files(
+    filepaths: list[str],
+    from_str: str | None = None,
+    to_str: str | None = None,
+    exclude_resolved: bool = True,
+) -> list[dict]:
     start = end = None
     if from_str and to_str:
         start, end = build_range(from_str, to_str)
@@ -604,6 +677,10 @@ def process_files(filepaths: list[str], from_str: str | None = None, to_str: str
             if dedup_key in seen:
                 continue
             seen.add(dedup_key)
+
+            if exclude_resolved and _looks_like_resolved_message(row.get("ham_metin", "")):
+                continue
+
             all_rows.append(row)
 
     return all_rows
